@@ -43,9 +43,13 @@ def memoize(function):
 
 @memoize
 def get_args():
-    # fuck PEP8
-    defaultconfigpath = os.getenv('POGOMAP_CONFIG', os.path.join(os.path.dirname(__file__), '../config/config.ini'))
-    parser = configargparse.ArgParser(default_config_files=[defaultconfigpath], auto_env_var_prefix='POGOMAP_')
+    # pre-check to see if the -cf or --config flag is used on the command line
+    # if not, we'll use the env var or default value.  this prevents layering of
+    # config files, and handles missing config.ini as well
+    defaultconfigfiles = []
+    if '-cf' not in sys.argv and '--config' not in sys.argv:
+        defaultconfigfiles = [os.getenv('POGOMAP_CONFIG', os.path.join(os.path.dirname(__file__), '../config/config.ini'))]
+    parser = configargparse.ArgParser(default_config_files=defaultconfigfiles, auto_env_var_prefix='POGOMAP_')
     parser.add_argument('-cf', '--config', is_config_file=True, help='Configuration file')
     parser.add_argument('-a', '--auth-service', type=str.lower, action='append', default=[],
                         help='Auth Services, either one for all accounts or one per account: ptc or google. Defaults all to ptc.')
@@ -61,6 +65,8 @@ def get_args():
                         help='Seconds for accounts to rest when they fail or are switched out')
     parser.add_argument('-ac', '--accountcsv',
                         help='Load accounts from CSV file containing "auth_service,username,passwd" lines')
+    parser.add_argument('-bh', '--beehive',
+                        help='Use beehive configuration for multiple accounts, one account per hex.  Make sure to keep -st under 5, and -w under the total amount of accounts available', action='store_true', default=False)
     parser.add_argument('-l', '--location', type=parse_unicode,
                         help='Location, can be an address or coordinates')
     parser.add_argument('-j', '--jitter', help='Apply random -9m to +9m jitter to location',
@@ -70,6 +76,25 @@ def get_args():
     parser.add_argument('-sd', '--scan-delay',
                         help='Time delay between requests in scan threads',
                         type=float, default=10)
+    parser.add_argument('-enc', '--encounter',
+                        help='Start an encounter to gather IVs and moves',
+                        action='store_true', default=False)
+    parser.add_argument('-cs', '--captcha-solving',
+                        help='Enables captcha solving',
+                        action='store_true', default=False)
+    parser.add_argument('-ck', '--captcha-key',
+                        help='2Captcha API key')
+    parser.add_argument('-cds', '--captcha-dsk',
+                        help='PokemonGo captcha data-sitekey',
+                        default="6LeeTScTAAAAADqvhqVMhPpr_vB9D364Ia-1dSgK")
+    parser.add_argument('-ed', '--encounter-delay',
+                        help='Time delay between encounter pokemon in scan threads',
+                        type=float, default=1)
+    encounter_list = parser.add_mutually_exclusive_group()
+    encounter_list.add_argument('-ewht', '--encounter-whitelist', action='append', default=[],
+                                help='List of pokemon to encounter for more stats')
+    encounter_list.add_argument('-eblk', '--encounter-blacklist', action='append', default=[],
+                                help='List of pokemon to NOT encounter for more stats')
     parser.add_argument('-ld', '--login-delay',
                         help='Time delay between each login attempt',
                         type=float, default=5)
@@ -164,6 +189,9 @@ def get_args():
                         action='store_true', default=False)
     parser.add_argument('--wh-threads', help='Number of webhook threads; increase if the webhook queue falls behind',
                         type=int, default=1)
+    parser.add_argument('-igl', '--ignore-list',
+                        help='Ignores Pokemon from the map (including parsing them into local db)',
+                        action='append', default=[])
     parser.add_argument('--ssl-certificate', help='Path to SSL certificate file')
     parser.add_argument('--ssl-privatekey', help='Path to SSL private key file')
     parser.add_argument('-ps', '--print-status', action='store_true',
@@ -177,7 +205,6 @@ def get_args():
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument('-v', '--verbose', help='Show debug messages from PomemonGo-Map and pgoapi. Optionally specify file to log to.', nargs='?', const='nofile', default=False, metavar='filename.log')
     verbosity.add_argument('-vv', '--very-verbose', help='Like verbose, but show debug messages from all modules as well.  Optionally specify file to log to.', nargs='?', const='nofile', default=False, metavar='filename.log')
-    verbosity.add_argument('-d', '--debug', help='Deprecated, use -v or -vv instead.', action='store_true')
     parser.set_defaults(DEBUG=False)
 
     args = parser.parse_args()
@@ -341,6 +368,9 @@ def get_args():
             print(sys.argv[0] + ": Error: no accounts specified. Use -a, -u, and -p or --accountcsv to add accounts")
             sys.exit(1)
 
+        args.encounter_blacklist = [int(i) for i in args.encounter_blacklist]
+        args.encounter_whitelist = [int(i) for i in args.encounter_whitelist]
+
         # Decide which scanning mode to use
         if args.spawnpoint_scanning:
             args.scheduler = 'SpawnScan'
@@ -348,6 +378,14 @@ def get_args():
             args.scheduler = 'HexSearchSpawnpoint'
         else:
             args.scheduler = 'HexSearch'
+
+        #return int for pokemon ignore list if it exists
+        if len(args.ignore_list):
+            try:
+                args.ignore_list = set([int(i) for i in args.ignore_list])
+            except Exception as e:
+                print("Error: Pokemon IDs need to be Integer", e)
+                sys.exit(1)
 
     return args
 
@@ -420,9 +458,9 @@ def get_encryption_lib_path(args):
         # win32 doesn't mean necessarily 32 bits
         if sys.platform == "win32" or sys.platform == "cygwin":
             if platform.architecture()[0] == '64bit':
-                lib_name = "encrypt64bit.dll"
+                lib_name = "encrypt64.dll"
             else:
-                lib_name = "encrypt32bit.dll"
+                lib_name = "encrypt32.dll"
 
         elif sys.platform == "darwin":
             lib_name = "libencrypt-osx-64.so"
@@ -453,7 +491,7 @@ def get_encryption_lib_path(args):
             log.error(err)
             raise Exception(err)
 
-        lib_path = os.path.join(os.path.dirname(__file__), "libencrypt", lib_name)
+        lib_path = os.path.join(os.path.dirname(__file__), "../pokecrypt-pgoapi", lib_name)
 
         if not os.path.isfile(lib_path):
             err = "Could not find {} encryption library {}".format(sys.platform, lib_path)
