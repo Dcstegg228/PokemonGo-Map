@@ -35,7 +35,7 @@ If you're going to run a copy from the latest ``develop`` branch in ``git`` you 
 
 .. code-block:: bash
 
-  git clone https://github.com/PokemonGoMap/PokemonGo-Map.git
+  git clone --recursive https://github.com/PokemonGoMap/PokemonGo-Map.git
 
 Installing Modules
 ******************
@@ -154,4 +154,4 @@ If you are running a ``git`` version, you can update with a few quick commands:
   npm install
   npm run build
 
-You can now restart your ``runserver.py`` command.
+**IMPORTANT** Some updates will include database changes that run on first startup. These can take a while to update. You should run only **one** ``runserver.py`` command until you are certain that the DB has been updated. You will know almost immediatly that your DB needs updating by seing the following in the log/terminal screen **Detected database version 7, updating to 8** when it's done the log/terminal will continue as normal. This can take a while so be patient. Once it's done you can start all your instances like you normally would.

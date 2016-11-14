@@ -257,7 +257,7 @@ def worker_status_db_thread(threads_status, name, db_updates_queue):
 
 
 # The main search loop that keeps an eye on the over all process
-def search_overseer_thread(args, new_location_queue, pause_bit, heartb, encryption_lib_path, db_updates_queue, wh_queue):
+def search_overseer_thread(args, new_location_queue, pause_bit, heartb, db_updates_queue, wh_queue):
 
     log.info('Search overseer starting')
 
@@ -353,7 +353,7 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb, encrypti
         t = Thread(target=search_worker_thread,
                    name='search-worker-{}'.format(i),
                    args=(args, account_queue, account_failures, search_items_queue, pause_bit,
-                         encryption_lib_path, threadStatus[workerId],
+                         threadStatus[workerId],
                          db_updates_queue, wh_queue))
         t.daemon = True
         t.start()
@@ -476,7 +476,7 @@ def _generate_locations(current_location, step_distance, step_limit, worker_coun
     return results
 
 
-def search_worker_thread(args, account_queue, account_failures, search_items_queue, pause_bit, encryption_lib_path, status, dbq, whq):
+def search_worker_thread(args, account_queue, account_failures, search_items_queue, pause_bit, status, dbq, whq):
 
     log.debug('Search worker thread starting')
 
