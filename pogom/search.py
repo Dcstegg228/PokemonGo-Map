@@ -531,38 +531,6 @@ def search_worker_thread(args, account_queue, account_failures, search_items_que
                     break  # exit this loop to get a new account and have the API recreated
 
 
-                if args.captcha_solving:
-
-                    if consecutive_empties >= 2:
-                        captcha_url = captcha_request(api)
-
-                        if len(captcha_url) > 1:
-                            status['message'] = 'Account {} is encountering a captcha, starting 2captcha sequence'.format(account['username'])
-                            log.warning(status['message'])
-                            captcha_token = token_request(args, status, captcha_url)
-
-                            if 'ERROR' in captcha_token:
-                                log.warning("Unable to resolve captcha, please check your 2captcha API key and/or wallet balance")
-                                account_failures.append({'account': account, 'last_fail_time': now(), 'reason': 'catpcha failed to verify'})
-                                break
-
-                            else:
-                                status['message'] = 'Retrieved captcha token, attempting to verify challenge for {}'.format(account['username'])
-                                log.info(status['message'])
-                                response = api.verify_challenge(token=captcha_token)
-
-                                if 'success' in response['responses']['VERIFY_CHALLENGE']:
-                                    status['message'] = "Account {} successfully uncaptcha'd".format(account['username'])
-                                    log.info(status['message'])
-
-                                else:
-                                    status['message'] = "Account {} failed verifyChallenge, putting away account for now".format(account['username'])
-                                    log.info(status['message'])
-                                    account_failures.append({'account': account, 'last_fail_time': now(), 'reason': 'catpcha failed to verify'})
-                                    break
-                                time.sleep(1)
-                                
-
                 while pause_bit.is_set():
                     status['message'] = 'Scanning paused'
                     time.sleep(2)
@@ -607,6 +575,10 @@ def search_worker_thread(args, account_queue, account_failures, search_items_que
                     # No sleep here; we've not done anything worth sleeping for. Plus we clearly need to catch up!
                     continue
 
+                # Get the actual altitude of step_location
+                altitude = get_altitude(step_location[0], step_location[1], args.gmaps_key)
+                step_location = (step_location[0], step_location[1], altitude)
+                
                 # Let the api know where we intend to be for this loop
                 # doing this before check_login so it does not also have to be done there
                 # when the auth token is refreshed
@@ -616,7 +588,7 @@ def search_worker_thread(args, account_queue, account_failures, search_items_que
                 check_login(args, account, api, step_location, status['proxy_url'])
 
                 # putting this message after the check_login so the messages aren't out of order
-                status['message'] = 'Searching at {:6f},{:6f}'.format(step_location[0], step_location[1])
+                status['message'] = 'Searching at {:6f},{:6f},{:6f}'.format(step_location[0], step_location[1], step_location[2])
                 log.info(status['message'])
 
                 # Make the actual request (finally!)
@@ -631,8 +603,33 @@ def search_worker_thread(args, account_queue, account_failures, search_items_que
                     time.sleep(args.scan_delay)
                     continue
 
-                # Got the response, parse it out, send todo's to db/wh queues
+               # Got the response, check for captcha, parse it out, send todo's to db/wh queues
                 try:
+                     # Captcha check
+                    if args.captcha_solving:
+                        captcha_url = response_dict['responses']['CHECK_CHALLENGE']['challenge_url']
+                        if len(captcha_url) > 1:
+                            status['message'] = 'Account {} is encountering a captcha, starting 2captcha sequence'.format(account['username'])
+                            log.warning(status['message'])
+                            captcha_token = token_request(args, status, captcha_url)
+                            if 'ERROR' in captcha_token:
+                                log.warning("Unable to resolve captcha, please check your 2captcha API key and/or wallet balance")
+                                account_failures.append({'account': account, 'last_fail_time': now(), 'reason': 'catpcha failed to verify'})
+                                break
+                            else:
+                                status['message'] = 'Retrieved captcha token, attempting to verify challenge for {}'.format(account['username'])
+                                log.info(status['message'])
+                                response = api.verify_challenge(token=captcha_token)
+                                if 'success' in response['responses']['VERIFY_CHALLENGE']:
+                                    status['message'] = "Account {} successfully uncaptcha'd".format(account['username'])
+                                    log.info(status['message'])
+                                else:
+                                    status['message'] = "Account {} failed verifyChallenge, putting away account for now".format(account['username'])
+                                    log.info(status['message'])
+                                    account_failures.append({'account': account, 'last_fail_time': now(), 'reason': 'catpcha failed to verify'})
+                                    break
+
+                    # Parse 'GET_MAP_OBJECTS'
                     parsed = parse_map(args, response_dict, step_location, dbq, whq, api)
                     search_items_queue.task_done()
                     if parsed['count'] > 0:
@@ -761,10 +758,20 @@ def map_request(api, position, jitter=False):
     try:
         cell_ids = util.get_cell_ids(scan_location[0], scan_location[1])
         timestamps = [0, ] * len(cell_ids)
-        return api.get_map_objects(latitude=f2i(scan_location[0]),
-                                   longitude=f2i(scan_location[1]),
-                                   since_timestamp_ms=timestamps,
-                                   cell_id=cell_ids)
+        req = api.create_request()
+        response = req.check_challenge()
+        response = req.get_hatched_eggs()
+        response = req.get_inventory()
+        response = req.check_awarded_badges()
+        response = req.download_settings()
+        response = req.get_buddy_walked()
+        response = req.get_map_objects(latitude=f2i(scan_location[0]),
+                                       longitude=f2i(scan_location[1]),
+                                       since_timestamp_ms=timestamps,
+                                       cell_id=cell_ids)
+        response = req.call()
+        return response
+
     except Exception as e:
         log.warning('Exception while downloading map: %s', e)
         return False
@@ -785,12 +792,6 @@ def gym_request(api, position, gym):
     except Exception as e:
         log.warning('Exception while downloading gym details: %s', e)
         return False
-
-
-def captcha_request(api):
-    response = api.check_challenge()
-    captcha_url = response['responses']['CHECK_CHALLENGE']['challenge_url']
-    return captcha_url
 
 
 def token_request(args, status, url):
@@ -828,6 +829,17 @@ def calc_distance(pos1, pos2):
     d = R * c
 
     return d
+
+
+def get_altitude(latitude, longitude, key):
+    r = requests.Session()
+    try:
+        response = r.get("https://maps.googleapis.com/maps/api/elevation/json?locations={},{}&key={}".format(latitude, longitude, key))
+        response = response.json()
+        altitude = response["results"][0]["elevation"]
+    except:
+        altitude = 0.0
+    return altitude
 
 
 # Delay each thread start time so that logins only occur ~1s
